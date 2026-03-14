@@ -58,9 +58,7 @@ class TreeNode:
         self.lat = lat
         self.lon = lon
         self.registered_users = []
-        # forwarding_pointers: user_id -> target_node_name
         self.forwarding_pointers = {}
-        # replicated_locations: user_id -> leaf_node_name
         self.replicated_locations = {}
 
     def path_to_root(self):
@@ -80,14 +78,6 @@ class TreeNode:
 # ─────────────────────────────────────────────────────────────
 
 def build_tree(max_depth=3, max_branch=None):
-    """
-    Level 0: National Root (HLR)
-    Level 1: Regions
-    Level 2: States
-    Level 3: Cities (leaves)
-    max_depth: 1=regions only, 2=regions+states, 3=full
-    max_branch: limit children per node (None=all)
-    """
     root = TreeNode("US_HLR", level=0, lat=39.8, lon=-98.6)
     all_nodes = {"US_HLR": root}
     leaves = []
@@ -129,7 +119,6 @@ def build_tree(max_depth=3, max_branch=None):
                 all_nodes[city_name] = city_node
                 leaves.append(city_node)
 
-    # assign lat/lon to intermediate nodes as average of children
     _assign_coords(root)
     return root, all_nodes, leaves
 
@@ -186,13 +175,38 @@ def find_lca(node_a, node_b):
 
 
 # ─────────────────────────────────────────────────────────────
-# ROUTE CALL: returns (path, cost, method_used)
+# ROUTING METHODS
 # ─────────────────────────────────────────────────────────────
 
-def route_call_basic(caller_leaf, callee_leaf, all_nodes):
-    """Basic HLR lookup: go up to LCA, then down."""
+def route_call_via_root(caller_leaf, callee_leaf, root, all_nodes):
+    """
+    Baseline: Always go through root (HLR).
+    This represents a system without optimization.
+    """
+    # Path up from caller to root
+    path_up = []
+    n = caller_leaf
+    while n:
+        path_up.append(n)
+        n = n.parent
+    
+    # Path down from root to callee
+    path_down_rev = []
+    n = callee_leaf
+    while n and n.name != root.name:
+        path_down_rev.append(n)
+        n = n.parent
+    path_down = list(reversed(path_down_rev))
+    
+    full_path = path_up + path_down
+    cost = len(full_path) - 1
+    return full_path, cost, "Via Root (No Optimization)"
+
+
+def route_call_lca(caller_leaf, callee_leaf, all_nodes):
+    """LCA-based lookup: go up to LCA, then down."""
     lca = find_lca(caller_leaf, callee_leaf)
-    # path up from caller to LCA
+    
     path_up = []
     n = caller_leaf
     while n and n.name != lca.name:
@@ -200,7 +214,6 @@ def route_call_basic(caller_leaf, callee_leaf, all_nodes):
         n = n.parent
     path_up.append(lca)
 
-    # path down from LCA to callee
     path_down = []
     n = callee_leaf
     while n and n.name != lca.name:
@@ -209,20 +222,18 @@ def route_call_basic(caller_leaf, callee_leaf, all_nodes):
     path_down.reverse()
 
     full_path = path_up + path_down
-    cost = len(full_path) - 1  # edges
-    return full_path, cost, "Basic LCA"
+    cost = len(full_path) - 1
+    return full_path, cost, f"LCA ({lca.name})"
 
 
 def route_call_with_forwarding(caller_leaf, callee_leaf, all_nodes, callee_uid, forwarding_level):
     """
     Check forwarding pointers along the path up from caller.
-    If a forwarding pointer for callee_uid is found at or below forwarding_level,
-    follow it.
     """
-    # walk up from caller looking for a forwarding pointer
     path_up = []
     n = caller_leaf
     found_fwd = None
+    
     while n:
         path_up.append(n)
         if callee_uid in n.forwarding_pointers:
@@ -234,10 +245,10 @@ def route_call_with_forwarding(caller_leaf, callee_leaf, all_nodes, callee_uid, 
 
     if found_fwd:
         fwd_node, target_node = found_fwd
-        # now route from fwd_node down to target_node (the actual callee leaf may differ)
-        # For simplicity, the forwarding pointer points to current leaf
-        # path = path_up (to fwd_node) + path from fwd_node to target
+        
+        # Path from fwd_node to target_node
         lca2 = find_lca(fwd_node, target_node)
+        
         path_mid = []
         nn = fwd_node
         while nn and nn.name != lca2.name:
@@ -253,51 +264,59 @@ def route_call_with_forwarding(caller_leaf, callee_leaf, all_nodes, callee_uid, 
         path_down.reverse()
 
         full_path = path_up + path_mid + path_down
-        # deduplicate consecutive
+        
+        # Deduplicate consecutive
         deduped = [full_path[0]]
         for p in full_path[1:]:
             if p.name != deduped[-1].name:
                 deduped.append(p)
         cost = len(deduped) - 1
-        return deduped, cost, f"Forwarding (found at L{fwd_node.level})"
+        return deduped, cost, f"Forwarding (at L{fwd_node.level}: {fwd_node.name})"
 
-    # fallback to basic
-    return route_call_basic(caller_leaf, callee_leaf, all_nodes)
+    # Fallback to LCA
+    return route_call_lca(caller_leaf, callee_leaf, all_nodes)
 
 
-def route_call_with_replication(caller_leaf, callee_leaf, all_nodes, callee_uid):
+def route_call_with_replication(caller_leaf, callee_leaf, root, all_nodes, callee_uid):
     """
     Walk up from caller. If any node has replicated location for callee_uid,
-    use that to short-circuit.
+    use that to short-circuit (don't need to go all the way to root).
     """
     n = caller_leaf
     path_up = []
+    
     while n:
         path_up.append(n)
         if callee_uid in n.replicated_locations:
             target_name = n.replicated_locations[callee_uid]
             if target_name in all_nodes:
                 target_node = all_nodes[target_name]
-                # go down to target
-                path_down = []
+                
+                # Build path down from n to target
+                path_down_rev = []
                 nn = target_node
                 while nn and nn.name != n.name:
-                    path_down.append(nn)
+                    path_down_rev.append(nn)
                     nn = nn.parent
-                path_down.reverse()
+                path_down = list(reversed(path_down_rev))
+                
                 full_path = path_up + path_down
+                
+                # Deduplicate
                 deduped = [full_path[0]]
                 for p in full_path[1:]:
                     if p.name != deduped[-1].name:
                         deduped.append(p)
-                return deduped, len(deduped) - 1, f"Replication (found at L{n.level})"
+                
+                return deduped, len(deduped) - 1, f"Replication (at L{n.level}: {n.name})"
         n = n.parent
 
-    return route_call_basic(caller_leaf, callee_leaf, all_nodes)
+    # No replication found, go via root
+    return route_call_via_root(caller_leaf, callee_leaf, root, all_nodes)
 
 
 # ─────────────────────────────────────────────────────────────
-# SET FORWARDING POINTERS
+# FORWARDING POINTERS
 # ─────────────────────────────────────────────────────────────
 
 def set_forwarding_pointers(user, old_leaf, new_leaf, forwarding_level):
@@ -318,19 +337,19 @@ def clear_forwarding_pointers(user, all_nodes):
 # REPLICATION
 # ─────────────────────────────────────────────────────────────
 
-def update_replication(user, all_nodes, cmr_threshold):
+def update_replication(user, all_nodes, cmr_threshold, replication_level):
     """
-    If user CMR >= threshold, replicate location info up the tree from current leaf.
-    Otherwise, clear replication.
+    If user CMR >= threshold, replicate location info up to replication_level.
+    replication_level: 0 = up to root, 1 = up to region, etc.
     """
-    # clear old
+    # Clear old
     for node in all_nodes.values():
         if user.uid in node.replicated_locations:
             del node.replicated_locations[user.uid]
 
     if user.cmr >= cmr_threshold:
         n = user.current_leaf
-        while n:
+        while n and n.level >= replication_level:
             n.replicated_locations[user.uid] = user.current_leaf.name
             n = n.parent
 
@@ -369,7 +388,7 @@ def draw_us_map_tree(root, all_nodes, users, highlight_path=None, forwarding_edg
 
     # Color nodes by level
     level_colors = {0: 'red', 1: 'blue', 2: 'green', 3: 'orange'}
-    level_names = {0: 'L0: HLR', 1: 'L1: Region', 2: 'L2: State', 3: 'L3: City'}
+    level_names = {0: 'L0: HLR (Root)', 1: 'L1: Region', 2: 'L2: State', 3: 'L3: City (VLR)'}
 
     for level in range(4):
         lats, lons, texts, sizes = [], [], [], []
@@ -433,15 +452,15 @@ def draw_us_map_tree(root, all_nodes, users, highlight_path=None, forwarding_edg
         showcountries=True
     )
     fig.update_layout(
-        height=520, margin=dict(l=0, r=0, t=30, b=0),
-        title="Hierarchical Location Scheme on US Map",
+        height=500, margin=dict(l=0, r=0, t=30, b=0),
+        title="  Hierarchical Location Network on US Map",
         legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
     )
     return fig
 
 
 # ─────────────────────────────────────────────────────────────
-# DRAW LOGICAL TREE (Plotly Treemap or manual layout)
+# DRAW LOGICAL TREE
 # ─────────────────────────────────────────────────────────────
 
 def draw_logical_tree(root, all_nodes, users, highlight_path_names=None):
@@ -451,20 +470,23 @@ def draw_logical_tree(root, all_nodes, users, highlight_path_names=None):
 
     fig = go.Figure()
 
-    # edges
+    # Edges
     for name, node in all_nodes.items():
         if node.parent and name in positions and node.parent.name in positions:
             x0, y0 = positions[node.parent.name]
             x1, y1 = positions[name]
-            color = 'red' if (highlight_path_names and node.parent.name in highlight_path_names and name in highlight_path_names) else 'lightgray'
-            width = 3 if color == 'red' else 1
+            is_highlight = (highlight_path_names and 
+                           node.parent.name in highlight_path_names and 
+                           name in highlight_path_names)
+            color = 'red' if is_highlight else 'lightgray'
+            width = 4 if is_highlight else 1
             fig.add_trace(go.Scatter(
                 x=[x0, x1], y=[y0, y1], mode='lines',
                 line=dict(color=color, width=width),
                 showlegend=False, hoverinfo='none'
             ))
 
-    # nodes
+    # Nodes
     level_colors_tree = {0: 'red', 1: 'royalblue', 2: 'green', 3: 'orange'}
     for name, (x, y) in positions.items():
         node = all_nodes[name]
@@ -477,7 +499,7 @@ def draw_logical_tree(root, all_nodes, users, highlight_path_names=None):
         fig.add_trace(go.Scatter(
             x=[x], y=[y], mode='markers+text',
             marker=dict(
-                size=22 if is_highlighted else 16,
+                size=24 if is_highlighted else 16,
                 color=level_colors_tree.get(node.level, 'black'),
                 line=dict(width=3 if is_highlighted else 1, color='red' if is_highlighted else 'black')
             ),
@@ -490,10 +512,10 @@ def draw_logical_tree(root, all_nodes, users, highlight_path_names=None):
         ))
 
     fig.update_layout(
-        height=400, margin=dict(l=10, r=10, t=30, b=10),
+        height=350, margin=dict(l=10, r=10, t=40, b=10),
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, autorange='reversed'),
-        title="Logical Tree Structure"
+        title="  Logical Tree Structure (Hierarchical Database)"
     )
     return fig
 
@@ -514,77 +536,124 @@ def _layout_tree(node, positions, x, y, x_span):
 # SIMULATION
 # ─────────────────────────────────────────────────────────────
 
-def run_batch_simulation(users, all_nodes, leaves, num_calls, num_moves, forwarding_enabled, forwarding_level, replication_enabled, cmr_threshold):
+def run_simulation(users, all_nodes, leaves, root, num_calls, num_moves, 
+                   forwarding_enabled, forwarding_level, 
+                   replication_enabled, cmr_threshold, replication_level,
+                   rng_seed):
+    """Run simulation with deterministic RNG."""
+    rng = random.Random(rng_seed)
+    
     log = []
-    search_costs_basic = []
-    search_costs_optimized = []
+    costs_baseline = []
+    costs_optimized = []
     update_costs = []
     user_list = list(users.values())
+    
+    # Reset user stats and clear pointers
+    for u in user_list:
+        u.calls_made = 0
+        u.calls_received = 0
+        u.moves = 0
+    
+    for node in all_nodes.values():
+        node.forwarding_pointers = {}
+        node.replicated_locations = {}
 
     # Perform moves first
+    move_events = []
     for i in range(num_moves):
-        u = random.choice(user_list)
+        u = rng.choice(user_list)
         old_leaf = u.current_leaf
-        new_leaf = random.choice(leaves)
+        new_leaf = rng.choice(leaves)
         if new_leaf.name == old_leaf.name:
             continue
+        
         u.moves += 1
-
+        
         if forwarding_enabled:
             set_forwarding_pointers(u, old_leaf, new_leaf, forwarding_level)
 
-        # unregister from old, register at new
-        if u.uid in [x for x in old_leaf.registered_users]:
+        # Unregister from old, register at new
+        if u.uid in old_leaf.registered_users:
             old_leaf.registered_users = [x for x in old_leaf.registered_users if x != u.uid]
         new_leaf.registered_users.append(u.uid)
         u.current_leaf = new_leaf
 
         if replication_enabled:
-            update_replication(u, all_nodes, cmr_threshold)
+            update_replication(u, all_nodes, cmr_threshold, replication_level)
             uc = compute_update_cost(u, all_nodes)
             update_costs.append(uc)
-
-        log.append(f"MOVE: {u.uid} moved from {old_leaf.name} → {new_leaf.name} (total moves: {u.moves})")
+            log.append(f"  MOVE #{len(move_events)+1}: {u.uid} moved {old_leaf.name} → {new_leaf.name} (Update cost: {uc})")
+        else:
+            log.append(f"  MOVE #{len(move_events)+1}: {u.uid} moved {old_leaf.name} → {new_leaf.name}")
+        
+        move_events.append((u.uid, old_leaf.name, new_leaf.name))
 
     # Perform calls
     last_path = None
     last_method = ""
+    call_details = []
+    
     for i in range(num_calls):
-        caller = random.choice(user_list)
-        callee = random.choice(user_list)
+        caller = rng.choice(user_list)
+        callee = rng.choice(user_list)
         if caller.uid == callee.uid:
             continue
 
         caller.calls_made += 1
         callee.calls_received += 1
 
-        # basic cost
-        path_b, cost_b, _ = route_call_basic(caller.current_leaf, callee.current_leaf, all_nodes)
-        search_costs_basic.append(cost_b)
+        # Baseline cost (via root)
+        path_base, cost_base, method_base = route_call_via_root(
+            caller.current_leaf, callee.current_leaf, root, all_nodes)
+        costs_baseline.append(cost_base)
 
-        # optimized
+        # Optimized cost
         if forwarding_enabled:
-            path_o, cost_o, method = route_call_with_forwarding(
+            path_opt, cost_opt, method_opt = route_call_with_forwarding(
                 caller.current_leaf, callee.current_leaf, all_nodes, callee.uid, forwarding_level)
         elif replication_enabled:
-            path_o, cost_o, method = route_call_with_replication(
-                caller.current_leaf, callee.current_leaf, all_nodes, callee.uid)
+            path_opt, cost_opt, method_opt = route_call_with_replication(
+                caller.current_leaf, callee.current_leaf, root, all_nodes, callee.uid)
         else:
-            path_o, cost_o, method = path_b, cost_b, "Basic LCA"
+            path_opt, cost_opt, method_opt = route_call_lca(
+                caller.current_leaf, callee.current_leaf, all_nodes)
 
-        search_costs_optimized.append(cost_o)
-        last_path = path_o
-        last_method = method
+        costs_optimized.append(cost_opt)
+        last_path = path_opt
+        last_method = method_opt
 
-        saving = cost_b - cost_o
-        log.append(f"CALL #{i+1}: {caller.uid} → {callee.uid} | Basic cost: {cost_b} | Optimized cost: {cost_o} | Saving: {saving} | Method: {method}")
+        saving = cost_base - cost_opt
+        saving_pct = (saving / cost_base * 100) if cost_base > 0 else 0
+        
+        log.append(f"   CALL #{i+1}: {caller.uid}@{caller.current_leaf.name} → {callee.uid}@{callee.current_leaf.name}")
+        log.append(f"   Baseline (via Root): {cost_base} hops | Optimized ({method_opt}): {cost_opt} hops | Saved: {saving} ({saving_pct:.0f}%)")
+        
+        call_details.append({
+            'call_num': i + 1,
+            'caller': caller.uid,
+            'callee': callee.uid,
+            'baseline_cost': cost_base,
+            'optimized_cost': cost_opt,
+            'method': method_opt,
+            'saving': saving
+        })
 
-        # update replication after calls
+        # Update replication after calls
         if replication_enabled:
-            update_replication(caller, all_nodes, cmr_threshold)
-            update_replication(callee, all_nodes, cmr_threshold)
+            update_replication(caller, all_nodes, cmr_threshold, replication_level)
+            update_replication(callee, all_nodes, cmr_threshold, replication_level)
 
-    return log, search_costs_basic, search_costs_optimized, update_costs, last_path, last_method
+    return {
+        'log': log,
+        'costs_baseline': costs_baseline,
+        'costs_optimized': costs_optimized,
+        'update_costs': update_costs,
+        'last_path': last_path,
+        'last_method': last_method,
+        'call_details': call_details,
+        'move_count': len(move_events)
+    }
 
 
 # ─────────────────────────────────────────────────────────────
@@ -593,189 +662,260 @@ def run_batch_simulation(users, all_nodes, leaves, num_calls, num_moves, forward
 
 def main():
     st.set_page_config(page_title="Hierarchical Location Scheme", layout="wide")
-    st.title("📡 Hierarchical Location Scheme Simulator")
-    st.markdown("Simulates call routing, forwarding pointers, and replication in a hierarchical mobile location management scheme on a US map.")
+    st.title("Hierarchical Location Scheme Simulator")
+    st.markdown("""
+    Simulates call routing, **forwarding pointers**, and **replication** in a hierarchical 
+    mobile location management scheme. The tree represents the hierarchy of location databases 
+    (HLR → Region → State → City/VLR).
+    """)
 
     # ── Sidebar Controls ──
-    st.sidebar.header("🌲 Tree Configuration")
-    tree_depth = st.sidebar.slider("Tree Depth (max levels below root)", 1, 3, 3)
-    max_branch = st.sidebar.slider("Max children per node (branching factor)", 2, 6, 5,
-                                    help="Limits how many children each node can have")
+    st.sidebar.header("Tree Configuration")
+    tree_depth = st.sidebar.slider("Tree Depth", 1, 3, 3,
+                                    help="1=Regions only, 2=+States, 3=+Cities")
+    max_branch = st.sidebar.slider("Max children per node", 2, 6, 4)
 
-    st.sidebar.header("👤 Users")
+    st.sidebar.header("Users")
     num_users = st.sidebar.slider("Number of Users", 2, 20, 6)
 
-    st.sidebar.header("📞 Simulation Parameters")
-    num_calls = st.sidebar.slider("Number of Calls", 1, 50, 10)
-    num_moves = st.sidebar.slider("Number of User Moves (Mobility)", 0, 30, 5)
+    st.sidebar.header("Simulation Parameters")
+    num_calls = st.sidebar.slider("Number of Calls", 1, 50, 12)
+    num_moves = st.sidebar.slider("Number of User Moves", 0, 30, 4)
+    
+    st.sidebar.header("🎲 Randomness Control")
+    sim_seed = st.sidebar.number_input("Simulation Seed", min_value=1, max_value=9999, value=42,
+                                        help="Same seed = same results")
+    if st.sidebar.button("Randomize Seed"):
+        st.session_state.random_seed = random.randint(1, 9999)
+        st.rerun()
+    
+    if 'random_seed' in st.session_state:
+        sim_seed = st.session_state.random_seed
 
-    st.sidebar.header("➡️ Forwarding Pointers")
+    st.sidebar.header("Forwarding Pointers")
     forwarding_enabled = st.sidebar.checkbox("Enable Forwarding Pointers", value=True)
-    forwarding_level = st.sidebar.slider("Forwarding Level (set pointers up to this level)", 0, tree_depth, max(0, tree_depth - 1),
-                                          help="0 = root level (broadest), higher = more localized",
-                                          disabled=not forwarding_enabled)
+    forwarding_level = st.sidebar.slider(
+        "Forwarding Level", 0, tree_depth, 1,
+        help="0=Root (broadest), higher=more localized. Pointers set at this level and below.",
+        disabled=not forwarding_enabled)
 
-    st.sidebar.header("📋 Replication")
+    st.sidebar.header("Replication")
     replication_enabled = st.sidebar.checkbox("Enable Replication", value=False)
-    cmr_threshold = st.sidebar.slider("CMR Threshold for Replication", 0.5, 10.0, 2.0, 0.5,
-                                       help="Call-to-Mobility Ratio above which location is replicated up tree",
-                                       disabled=not replication_enabled)
+    if replication_enabled and forwarding_enabled:
+        st.sidebar.warning("Disable forwarding to see replication effects clearly")
+        forwarding_enabled = False
+    
+    cmr_threshold = st.sidebar.slider(
+        "CMR Threshold", 0.5, 10.0, 1.0, 0.5,
+        help="Call-to-Mobility Ratio above which location is replicated",
+        disabled=not replication_enabled)
+    replication_level = st.sidebar.slider(
+        "Replication Level", 0, tree_depth, 0,
+        help="0=Up to Root, higher=less replication",
+        disabled=not replication_enabled)
 
-    st.sidebar.header("🎯 Manual Call")
-    manual_mode = st.sidebar.checkbox("Manual Call Mode (pick caller/callee)")
-
-    # ── Build Tree ──
-    if 'seed' not in st.session_state:
-        st.session_state.seed = 42
-
-    if st.sidebar.button("🔄 Regenerate (new random seed)"):
-        st.session_state.seed = random.randint(1, 9999)
-
-    random.seed(st.session_state.seed)
-
+    # ── Build Tree (deterministic based on parameters) ──
+    tree_rng = random.Random(sim_seed)
     root, all_nodes, leaves = build_tree(max_depth=tree_depth, max_branch=max_branch)
 
-    # ── Create Users ──
+    # ── Create Users (deterministic) ──
     users = {}
     for i in range(num_users):
         uid = f"U{i+1}"
-        home = random.choice(leaves)
+        home = tree_rng.choice(leaves)
         u = User(uid, home)
         u.current_leaf = home
         home.registered_users.append(uid)
         users[uid] = u
 
-    # ── Manual call selection ──
-    manual_caller = None
-    manual_callee = None
-    if manual_mode:
-        col_m1, col_m2 = st.sidebar.columns(2)
-        user_ids = list(users.keys())
-        manual_caller = col_m1.selectbox("Caller", user_ids, index=0)
-        manual_callee = col_m2.selectbox("Callee", user_ids, index=min(1, len(user_ids)-1))
-
     # ── Run Simulation ──
-    if manual_mode and manual_caller and manual_callee and manual_caller != manual_callee:
-        # just one call
-        log, costs_b, costs_o, update_costs, last_path, last_method = run_batch_simulation(
-            users, all_nodes, leaves,
-            num_calls=0, num_moves=num_moves,
-            forwarding_enabled=forwarding_enabled, forwarding_level=forwarding_level,
-            replication_enabled=replication_enabled, cmr_threshold=cmr_threshold
-        )
-        # manual call
-        caller = users[manual_caller]
-        callee = users[manual_callee]
-        caller.calls_made += 1
-        callee.calls_received += 1
-        path_b, cost_b, _ = route_call_basic(caller.current_leaf, callee.current_leaf, all_nodes)
-        if forwarding_enabled:
-            path_o, cost_o, method = route_call_with_forwarding(
-                caller.current_leaf, callee.current_leaf, all_nodes, callee.uid, forwarding_level)
-        elif replication_enabled:
-            path_o, cost_o, method = route_call_with_replication(
-                caller.current_leaf, callee.current_leaf, all_nodes, callee.uid)
-        else:
-            path_o, cost_o, method = path_b, cost_b, "Basic LCA"
+    results = run_simulation(
+        users, all_nodes, leaves, root,
+        num_calls=num_calls, num_moves=num_moves,
+        forwarding_enabled=forwarding_enabled, forwarding_level=forwarding_level,
+        replication_enabled=replication_enabled, cmr_threshold=cmr_threshold,
+        replication_level=replication_level,
+        rng_seed=sim_seed + 1000  # Offset to get different sequence than user creation
+    )
 
-        costs_b.append(cost_b)
-        costs_o.append(cost_o)
-        last_path = path_o
-        last_method = method
-        log.append(f"MANUAL CALL: {manual_caller} → {manual_callee} | Basic: {cost_b} | Optimized: {cost_o} | Method: {method}")
-    else:
-        log, costs_b, costs_o, update_costs, last_path, last_method = run_batch_simulation(
-            users, all_nodes, leaves,
-            num_calls=num_calls, num_moves=num_moves,
-            forwarding_enabled=forwarding_enabled, forwarding_level=forwarding_level,
-            replication_enabled=replication_enabled, cmr_threshold=cmr_threshold
-        )
+    # ── Display Map ──
+    highlight_path_names = set(n.name for n in results['last_path']) if results['last_path'] else set()
+    
+    # Gather forwarding edges
+    fwd_edges = []
+    for name, node in all_nodes.items():
+        for uid, target_name in node.forwarding_pointers.items():
+            if target_name in all_nodes:
+                fwd_edges.append((node, all_nodes[target_name]))
 
-    # ── Display ──
-    # Top: Map + Tree side by side
-    col1, col2 = st.columns([3, 2])
+    fig_map = draw_us_map_tree(root, all_nodes, users, results['last_path'], fwd_edges)
+    st.plotly_chart(fig_map, use_container_width=True)
 
-    with col1:
-        highlight_path_names = set(n.name for n in last_path) if last_path else set()
-
-        # gather forwarding edges for visualization
-        fwd_edges = []
-        for name, node in all_nodes.items():
-            for uid, target_name in node.forwarding_pointers.items():
-                if target_name in all_nodes:
-                    fwd_edges.append((node, all_nodes[target_name]))
-
-        fig_map = draw_us_map_tree(root, all_nodes, users, last_path, fwd_edges)
-        st.plotly_chart(fig_map, use_container_width=True)
-
-    with col2:
-        fig_tree = draw_logical_tree(root, all_nodes, users, highlight_path_names)
-        st.plotly_chart(fig_tree, use_container_width=True)
+    # ── Tree Below Map ──
+    fig_tree = draw_logical_tree(root, all_nodes, users, highlight_path_names)
+    st.plotly_chart(fig_tree, use_container_width=True)
 
     # ── Metrics Row ──
-    st.subheader("📊 Simulation Results")
-    mcol1, mcol2, mcol3, mcol4, mcol5 = st.columns(5)
-    avg_basic = sum(costs_b) / len(costs_b) if costs_b else 0
+    st.subheader("Performance Metrics")
+    
+    costs_b = results['costs_baseline']
+    costs_o = results['costs_optimized']
+    update_costs = results['update_costs']
+    
+    avg_baseline = sum(costs_b) / len(costs_b) if costs_b else 0
     avg_opt = sum(costs_o) / len(costs_o) if costs_o else 0
     avg_update = sum(update_costs) / len(update_costs) if update_costs else 0
-    saving_pct = ((avg_basic - avg_opt) / avg_basic * 100) if avg_basic > 0 else 0
+    saving_pct = ((avg_baseline - avg_opt) / avg_baseline * 100) if avg_baseline > 0 else 0
+    total_search_cost = sum(costs_o)
+    total_update_cost = sum(update_costs)
 
-    mcol1.metric("Avg Basic Search Cost", f"{avg_basic:.2f}")
-    mcol2.metric("Avg Optimized Search Cost", f"{avg_opt:.2f}")
-    mcol3.metric("Search Cost Saving", f"{saving_pct:.1f}%")
-    mcol4.metric("Avg Update Cost (Replication)", f"{avg_update:.2f}")
-    mcol5.metric("Tree Nodes", len(all_nodes))
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    col1.metric("Avg Baseline Cost", f"{avg_baseline:.2f}", help="Via Root lookup")
+    col2.metric("Avg Optimized Cost", f"{avg_opt:.2f}")
+    col3.metric("Search Cost Saving", f"{saving_pct:.1f}%", 
+                delta=f"-{avg_baseline-avg_opt:.1f} hops" if avg_baseline > avg_opt else None)
+    col4.metric("Total Search Cost", f"{total_search_cost}")
+    col5.metric("Total Update Cost", f"{total_update_cost}")
+    col6.metric("Tree Nodes", len(all_nodes))
 
-    # ── Nodes benefiting from forwarding ──
+    # ── Strategy Summary ──
+    strategy_name = "No Optimization"
     if forwarding_enabled:
-        nodes_with_fwd = sum(1 for n in all_nodes.values() if n.forwarding_pointers)
-        st.info(f"🔗 **Forwarding pointers active at {nodes_with_fwd} nodes** (level ≥ {forwarding_level}). "
-                f"All calls to users with forwarding pointers at or below this level can short-circuit the LCA lookup.")
+        strategy_name = f"Forwarding Pointers (Level ≥ {forwarding_level})"
+    elif replication_enabled:
+        strategy_name = f"Replication (CMR ≥ {cmr_threshold}, Level ≥ {replication_level})"
+    
+    st.info(f"**Active Strategy:** {strategy_name}")
 
     # ── Cost Comparison Chart ──
-    st.subheader("📈 Search Cost: Basic vs Optimized (per call)")
+    st.subheader("📈 Search Cost Per Call: Baseline vs Optimized")
     if costs_b:
         fig_cost = go.Figure()
-        fig_cost.add_trace(go.Bar(x=list(range(1, len(costs_b)+1)), y=costs_b, name='Basic (LCA)', marker_color='lightcoral'))
-        fig_cost.add_trace(go.Bar(x=list(range(1, len(costs_o)+1)), y=costs_o, name='Optimized', marker_color='lightgreen'))
-        fig_cost.update_layout(barmode='group', xaxis_title='Call #', yaxis_title='Cost (edges traversed)', height=300, margin=dict(t=30))
+        fig_cost.add_trace(go.Bar(
+            x=list(range(1, len(costs_b)+1)), y=costs_b, 
+            name='Baseline (via Root)', marker_color='lightcoral'))
+        fig_cost.add_trace(go.Bar(
+            x=list(range(1, len(costs_o)+1)), y=costs_o, 
+            name='Optimized', marker_color='lightgreen'))
+        fig_cost.update_layout(
+            barmode='group', 
+            xaxis_title='Call #', 
+            yaxis_title='Cost (hops/edges)', 
+            height=300, 
+            margin=dict(t=30),
+            legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99)
+        )
         st.plotly_chart(fig_cost, use_container_width=True)
 
-    # ── Update vs Search Cost ──
-    if replication_enabled:
-        st.subheader("🔄 Update Cost vs Search Cost (Replication Trade-off)")
-        col_r1, col_r2 = st.columns(2)
-        with col_r1:
-            fig_tradeoff = go.Figure()
-            fig_tradeoff.add_trace(go.Scatter(y=costs_o, mode='lines+markers', name='Search Cost', line=dict(color='green')))
-            if update_costs:
-                fig_tradeoff.add_trace(go.Scatter(y=update_costs, mode='lines+markers', name='Update Cost', line=dict(color='red')))
-            fig_tradeoff.update_layout(height=300, xaxis_title='Event #', yaxis_title='Cost', margin=dict(t=30))
-            st.plotly_chart(fig_tradeoff, use_container_width=True)
+    # ── Cumulative Cost Comparison ──
+    if len(costs_b) > 1:
+        st.subheader("Cumulative Cost Over Time")
+        cum_baseline = [sum(costs_b[:i+1]) for i in range(len(costs_b))]
+        cum_opt = [sum(costs_o[:i+1]) for i in range(len(costs_o))]
+        cum_update = [sum(update_costs[:i+1]) for i in range(len(update_costs))] if update_costs else []
+        
+        fig_cum = go.Figure()
+        fig_cum.add_trace(go.Scatter(
+            x=list(range(1, len(cum_baseline)+1)), y=cum_baseline,
+            mode='lines+markers', name='Cumulative Baseline Search', line=dict(color='coral')))
+        fig_cum.add_trace(go.Scatter(
+            x=list(range(1, len(cum_opt)+1)), y=cum_opt,
+            mode='lines+markers', name='Cumulative Optimized Search', line=dict(color='green')))
+        if cum_update:
+            # Extend to match length
+            fig_cum.add_trace(go.Scatter(
+                x=list(range(1, len(cum_update)+1)), y=cum_update,
+                mode='lines+markers', name='Cumulative Update Cost', line=dict(color='orange')))
+        
+        fig_cum.update_layout(
+            xaxis_title='Event #',
+            yaxis_title='Cumulative Cost',
+            height=300,
+            margin=dict(t=30)
+        )
+        st.plotly_chart(fig_cum, use_container_width=True)
 
-        with col_r2:
-            st.markdown("**Per-User CMR (Call-to-Mobility Ratio)**")
+    # ── Replication Details ──
+    if replication_enabled:
+        st.subheader("📋 Replication & CMR Analysis")
+        col_r1, col_r2 = st.columns(2)
+        
+        with col_r1:
+            st.markdown("**Per-User Call-to-Mobility Ratio (CMR)**")
             cmr_data = []
             for u in users.values():
-                replicated = "✅" if u.cmr >= cmr_threshold else "❌"
+                total_calls = u.calls_made + u.calls_received
+                cmr_val = u.cmr
+                replicated = "Yes" if cmr_val >= cmr_threshold else "No"
+                cmr_display = f"{cmr_val:.2f}" if cmr_val != float('inf') else "∞ (no moves)"
                 cmr_data.append({
                     "User": u.uid,
-                    "Calls (sent+recv)": u.calls_made + u.calls_received,
+                    "Calls": total_calls,
                     "Moves": u.moves,
-                    "CMR": f"{u.cmr:.2f}" if u.cmr != float('inf') else "∞",
+                    "CMR": cmr_display,
                     "Replicated": replicated,
                     "Location": u.current_leaf.name
                 })
             st.dataframe(cmr_data, use_container_width=True)
+        
+        with col_r2:
+            st.markdown("**Replication Trade-off Explanation**")
+            st.markdown(f"""
+            - **CMR Threshold:** {cmr_threshold}
+            - Users with CMR ≥ {cmr_threshold} have location replicated
+            - **High CMR** (many calls, few moves): Replication saves search cost
+            - **Low CMR** (few calls, many moves): Update cost dominates
+            
+            **Current Stats:**
+            - Total Search Cost: {total_search_cost}
+            - Total Update Cost: {total_update_cost}
+            - Net Benefit: {total_search_cost - total_update_cost if replication_enabled else 'N/A'}
+            """)
 
-    # ── User Table ──
-    st.subheader("👤 User Status")
+    # ── Forwarding Pointer Details ──
+    if forwarding_enabled:
+        st.subheader("Forwarding Pointers Analysis")
+        
+        fwd_table = []
+        for name, node in all_nodes.items():
+            for uid, target in node.forwarding_pointers.items():
+                fwd_table.append({
+                    "Node": name, 
+                    "Level": node.level, 
+                    "User": uid, 
+                    "Points To": target
+                })
+        
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            if fwd_table:
+                st.markdown("**Active Forwarding Pointers**")
+                st.dataframe(fwd_table, use_container_width=True)
+            else:
+                st.info("No forwarding pointers set (no user has moved yet)")
+        
+        with col_f2:
+            st.markdown("**How Forwarding Works**")
+            st.markdown(f"""
+            When a user moves from node A to node B:
+            1. A forwarding pointer is set at A (and ancestors up to level {forwarding_level})
+            2. The pointer says: "User X is now at B"
+            3. Future calls find the pointer and skip the full tree traversal
+            
+            **Current Configuration:**
+            - Pointers set at levels ≥ {forwarding_level}
+            - {len(fwd_table)} active pointers
+            - {results['move_count']} moves occurred
+            """)
+
+    # ── User Status ──
+    st.subheader("User Status")
     user_table = []
     for u in users.values():
         user_table.append({
             "User ID": u.uid,
             "Home": u.home_leaf.name,
-            "Current": u.current_leaf.name,
+            "Current Location": u.current_leaf.name,
             "Calls Made": u.calls_made,
             "Calls Received": u.calls_received,
             "Moves": u.moves,
@@ -783,64 +923,70 @@ def main():
         })
     st.dataframe(user_table, use_container_width=True)
 
-    # ── Forwarding Pointer Table ──
-    if forwarding_enabled:
-        st.subheader("🔗 Forwarding Pointers in Tree")
-        fwd_table = []
-        for name, node in all_nodes.items():
-            for uid, target in node.forwarding_pointers.items():
-                fwd_table.append({"Node": name, "Level": node.level, "User": uid, "Points To": target})
-        if fwd_table:
-            st.dataframe(fwd_table, use_container_width=True)
-        else:
-            st.info("No forwarding pointers currently set (no user has moved yet, or pointers cleared).")
-
     # ── Event Log ──
-    st.subheader("📝 Event Log")
-    log_text = "\n".join(log) if log else "No events yet."
-    st.code(log_text, language="text")
+    with st.expander("📝 Detailed Event Log"):
+        log_text = "\n".join(results['log']) if results['log'] else "No events yet."
+        st.code(log_text, language="text")
 
-    # ── Explanation Panel ──
-    with st.expander("📖 How It Works — Technical Explanation"):
+    # ── Technical Explanation ──
+    with st.expander("📖 Technical Explanation"):
         st.markdown("""
 ### Hierarchical Location Scheme
 
 **Tree Structure:**
-- **Level 0 (Root/HLR):** National Home Location Register — knows every user's location (ultimately).
-- **Level 1 (Regions):** Northwest, Southwest, Midwest, South, Northeast.
-- **Level 2 (States):** Sub-regions within each region.
-- **Level 3 (Cities/VLRs):** Visitor Location Registers where users physically register.
+| Level | Name | Role |
+|-------|------|------|
+| 0 | Root (HLR) | Home Location Register - Global database |
+| 1 | Region | Regional location server |
+| 2 | State | Area-level location server |
+| 3 | City (VLR) | Visitor Location Register - Where users connect |
 
-**Basic Call Routing (LCA Method):**
-1. Start at the caller's current leaf (VLR).
-2. Walk UP the tree until reaching the **Lowest Common Ancestor (LCA)** of caller and callee.
-3. The LCA has knowledge of the callee's location (or can query downward).
-4. Walk DOWN from LCA to the callee's leaf.
-5. **Cost** = total edges traversed.
+---
 
-**Forwarding Pointers:**
-- When a user moves from leaf X to leaf Y, a pointer is set at X (and nodes up to the configured level) pointing to Y.
-- On a subsequent call, instead of going all the way to the LCA, the search can follow the forwarding pointer as soon as it encounters one.
-- **Tree Level Based:** Lower forwarding level (e.g., 0 = root) → pointers set higher → more nodes benefit (broader scope) but more pointer storage. Higher level → more localized, fewer nodes benefit.
-- **Benefit:** Reduced latency for calls. The savings % shows how much the forwarding pointers reduce search cost on average.
+### Routing Methods Compared
 
-**Replication:**
-- Each user has a **Call-to-Mobility Ratio (CMR)** = (calls_sent + calls_received) / moves.
-- If CMR ≥ threshold: the user's location is replicated at every node up to the root.
-- Searches find replicated info sooner (at lower levels), reducing search cost.
-- **Trade-off:** High replication means every move requires updating ALL replicated nodes (high update cost).
-- If CMR < threshold: no replication, so moves are cheap but searches go to root.
+**1. Baseline (Via Root):**
+- Every call goes up to the root, then down to callee
+- Cost = depth(caller) + depth(callee)
+- Simple but expensive
 
-**Key Observations:**
-| Change | Effect |
-|--------|--------|
-| ↑ Calls, ↓ Moves | CMR rises → replication beneficial → search cost drops |
-| ↑ Moves, ↓ Calls | CMR drops → update cost dominates → replication not worth it |
-| Enable Forwarding | Search cost reduced, shown in savings % |
-| ↑ Forwarding Level | More localized, fewer nodes benefit |
-| ↓ Forwarding Level (toward 0) | Broader scope, more nodes benefit |
-| ↓ Tree Depth | Fewer levels → lower base cost but less geographic granularity |
-| ↑ Branching Factor | Wider tree → different LCA distances |
+**2. LCA (Lowest Common Ancestor):**
+- Go up only to the common ancestor, then down
+- Cost = distance(caller, LCA) + distance(LCA, callee)
+- Better than baseline when caller and callee are nearby
+
+**3. Forwarding Pointers:**
+- When user moves: A→B, leave pointer at A saying "go to B"
+- Calls find pointer before reaching LCA, shortcutting the search
+- Best for users who move rarely but receive many calls
+
+**4. Replication:**
+- Store user location at multiple tree levels
+- Calls find cached info early, avoiding root traversal
+- Update cost increases with each move
+- Best for high CMR (Call-to-Mobility Ratio)
+
+---
+
+### Key Metrics
+
+| Metric | Formula | Meaning |
+|--------|---------|---------|
+| CMR | (calls_sent + calls_received) / moves | Higher = replication beneficial |
+| Search Cost | Edges traversed to locate user | Lower is better |
+| Update Cost | Nodes to update when user moves | Lower is better |
+| Total Cost | Search Cost + Update Cost | System efficiency |
+
+---
+
+### When to Use Each Strategy
+
+| Scenario | Best Strategy |
+|----------|--------------|
+| High mobility, few calls | No optimization (or minimal forwarding) |
+| Low mobility, many calls | Replication (high CMR → replicate widely) |
+| Users move predictably | Forwarding at intermediate levels |
+| Mixed patterns | Combine strategies with CMR threshold |
         """)
 
 
