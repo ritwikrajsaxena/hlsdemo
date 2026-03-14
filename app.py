@@ -73,7 +73,7 @@ class TreeNode:
 
 
 # ─────────────────────────────────────────────────────────────
-# BUILD TREE FROM US_HIERARCHY
+# BUILD TREE
 # ─────────────────────────────────────────────────────────────
 
 def build_tree(max_depth=3, max_branch=None):
@@ -234,7 +234,6 @@ def route_call_with_forwarding(caller_leaf, callee_leaf, all_nodes, callee_uid, 
 
     if found_fwd:
         fwd_node, target_node = found_fwd
-
         lca2 = find_lca(fwd_node, target_node)
 
         path_mid = []
@@ -334,34 +333,32 @@ def compute_update_cost(user, all_nodes):
 
 
 # ─────────────────────────────────────────────────────────────
-# VISUALIZATION: US MAP WITH TREE
+# CALL COLORS
 # ─────────────────────────────────────────────────────────────
 
-# A palette for distinguishing multiple calls
 CALL_COLORS = [
     'red', 'blue', 'green', 'purple', 'orange',
     'cyan', 'magenta', 'gold', 'lime', 'deeppink',
     'darkorange', 'dodgerblue', 'mediumseagreen', 'crimson', 'slateblue',
-    'peru', 'teal', 'salmon', 'indigo', 'olive'
+    'peru', 'teal', 'salmon', 'indigo', 'olive',
+    'chocolate', 'darkviolet', 'tomato', 'steelblue', 'forestgreen',
+    'hotpink', 'navy', 'sienna', 'springgreen', 'maroon',
+    'turquoise', 'orangered', 'royalblue', 'darkgreen', 'coral',
+    'mediumpurple', 'goldenrod', 'cadetblue', 'firebrick', 'darkturquoise',
+    'yellowgreen', 'plum', 'seagreen', 'indianred', 'mediumvioletred',
+    'limegreen', 'darkslateblue', 'lightcoral', 'darkcyan', 'khaki'
 ]
 
 
-def draw_us_map_tree(root, all_nodes, users, call_paths_to_show=None, forwarding_edges=None, selected_call_idx=None):
-    """
-    call_paths_to_show: list of dicts with keys:
-        'path': list of TreeNode
-        'call_num': int
-        'caller': str
-        'callee': str
-        'method': str
-        'cost': int
-    selected_call_idx: index of the single selected call (None = show all)
-    """
+# ─────────────────────────────────────────────────────────────
+# VISUALIZATION: US MAP
+# ─────────────────────────────────────────────────────────────
+
+def draw_us_map_tree(root, all_nodes, users, call_paths_to_show=None, forwarding_edges=None):
     fig = go.Figure()
 
-    # Draw tree edges
-    edge_lats = []
-    edge_lons = []
+    # Tree edges
+    edge_lats, edge_lons = [], []
     for name, node in all_nodes.items():
         if node.parent and node.lat and node.lon and node.parent.lat and node.parent.lon:
             edge_lats += [node.parent.lat, node.lat, None]
@@ -375,7 +372,7 @@ def draw_us_map_tree(root, all_nodes, users, call_paths_to_show=None, forwarding
         hoverinfo='none'
     ))
 
-    # Color nodes by level
+    # Nodes by level
     level_colors = {0: 'red', 1: 'blue', 2: 'green', 3: 'orange'}
     level_names = {0: 'L0: HLR (Root)', 1: 'L1: Region', 2: 'L2: State', 3: 'L3: City (VLR)'}
 
@@ -388,7 +385,7 @@ def draw_us_map_tree(root, all_nodes, users, call_paths_to_show=None, forwarding
                 fwd_info = f" | Fwd: {list(node.forwarding_pointers.keys())}" if node.forwarding_pointers else ""
                 repl_info = f" | Repl: {list(node.replicated_locations.keys())}" if node.replicated_locations else ""
                 users_here = [u.uid for u in users.values() if u.current_leaf.name == name]
-                user_info = f" | Users here: {users_here}" if users_here else ""
+                user_info = f" | Users: {users_here}" if users_here else ""
                 texts.append(f"{name} (L{level}){fwd_info}{repl_info}{user_info}")
                 sizes.append(max(18 - level * 4, 6))
 
@@ -406,7 +403,7 @@ def draw_us_map_tree(root, all_nodes, users, call_paths_to_show=None, forwarding
                 name=level_names.get(level, f'L{level}')
             ))
 
-    # Draw call paths
+    # Call paths
     if call_paths_to_show:
         for i, call_info in enumerate(call_paths_to_show):
             path = call_info['path']
@@ -426,12 +423,12 @@ def draw_us_map_tree(root, all_nodes, users, call_paths_to_show=None, forwarding
                     mode='lines+markers',
                     line=dict(width=4, color=color),
                     marker=dict(size=10, color=color, symbol='diamond'),
-                    name=f"Call #{call_num}: {caller}→{callee} ({method}, cost={cost})",
+                    name=f"#{call_num}: {caller}→{callee} (cost={cost})",
                     hovertext=hover_texts,
                     hoverinfo='text'
                 ))
 
-    # Forwarding pointer edges
+    # Forwarding edges
     if forwarding_edges:
         fwd_lats, fwd_lons = [], []
         for (n1, n2) in forwarding_edges:
@@ -465,17 +462,13 @@ def draw_us_map_tree(root, all_nodes, users, call_paths_to_show=None, forwarding
 # ─────────────────────────────────────────────────────────────
 
 def draw_logical_tree(root, all_nodes, users, call_paths_to_show=None):
-    """
-    Draw tree top-down with highlighted call paths in different colors.
-    call_paths_to_show: same format as above
-    """
     positions = {}
     _layout_tree(root, positions, x=0, y=0, x_span=100)
 
     fig = go.Figure()
 
-    # Collect all highlighted edges from all visible calls
-    highlighted_edges = {}  # (parent_name, child_name) -> color
+    # Collect highlighted edges
+    highlighted_edges = {}
     if call_paths_to_show:
         for i, call_info in enumerate(call_paths_to_show):
             path = call_info['path']
@@ -487,7 +480,7 @@ def draw_logical_tree(root, all_nodes, users, call_paths_to_show=None):
                     highlighted_edges[(a, b)] = color
                     highlighted_edges[(b, a)] = color
 
-    # Draw tree edges
+    # Draw edges
     for name, node in all_nodes.items():
         if node.parent and name in positions and node.parent.name in positions:
             x0, y0 = positions[node.parent.name]
@@ -511,8 +504,8 @@ def draw_logical_tree(root, all_nodes, users, call_paths_to_show=None):
                 showlegend=False, hoverinfo='none'
             ))
 
-    # Collect highlighted node names
-    highlighted_nodes = {}  # name -> color
+    # Collect highlighted nodes
+    highlighted_nodes = {}
     if call_paths_to_show:
         for i, call_info in enumerate(call_paths_to_show):
             path = call_info['path']
@@ -572,7 +565,7 @@ def _layout_tree(node, positions, x, y, x_span):
 
 
 # ─────────────────────────────────────────────────────────────
-# SIMULATION  (returns ALL call paths)
+# SIMULATION — guarantees exactly num_calls successful calls
 # ─────────────────────────────────────────────────────────────
 
 def run_simulation(users, all_nodes, leaves, root, num_calls, num_moves,
@@ -585,7 +578,7 @@ def run_simulation(users, all_nodes, leaves, root, num_calls, num_moves,
     costs_baseline = []
     costs_optimized = []
     update_costs = []
-    all_call_paths = []  # store every call path
+    all_call_paths = []
     user_list = list(users.values())
 
     # Reset
@@ -598,7 +591,7 @@ def run_simulation(users, all_nodes, leaves, root, num_calls, num_moves,
         node.replicated_locations = {}
 
     # ── Moves ──
-    move_events = []
+    actual_moves = 0
     for i in range(num_moves):
         u = rng.choice(user_list)
         old_leaf = u.current_leaf
@@ -607,6 +600,7 @@ def run_simulation(users, all_nodes, leaves, root, num_calls, num_moves,
             continue
 
         u.moves += 1
+        actual_moves += 1
 
         if forwarding_enabled:
             set_forwarding_pointers(u, old_leaf, new_leaf, forwarding_level)
@@ -620,21 +614,28 @@ def run_simulation(users, all_nodes, leaves, root, num_calls, num_moves,
             update_replication(u, all_nodes, cmr_threshold, replication_level)
             uc = compute_update_cost(u, all_nodes)
             update_costs.append(uc)
-            log.append(f"📱 MOVE #{len(move_events)+1}: {u.uid} moved {old_leaf.name} → {new_leaf.name} (Update cost: {uc})")
+            log.append(f"📱 MOVE #{actual_moves}: {u.uid} moved {old_leaf.name} → {new_leaf.name} (Update cost: {uc})")
         else:
-            log.append(f"📱 MOVE #{len(move_events)+1}: {u.uid} moved {old_leaf.name} → {new_leaf.name}")
+            log.append(f"📱 MOVE #{actual_moves}: {u.uid} moved {old_leaf.name} → {new_leaf.name}")
 
-        move_events.append((u.uid, old_leaf.name, new_leaf.name))
+    # ── Calls — guarantee exactly num_calls ──
+    successful_calls = 0
+    max_attempts = num_calls * 5  # safety limit
+    attempts = 0
 
-    # ── Calls ──
-    for i in range(num_calls):
+    while successful_calls < num_calls and attempts < max_attempts:
+        attempts += 1
+
         caller = rng.choice(user_list)
-        callee = rng.choice(user_list)
-        if caller.uid == callee.uid:
-            continue
+        # pick a DIFFERENT callee
+        possible_callees = [u for u in user_list if u.uid != caller.uid]
+        if not possible_callees:
+            break
+        callee = rng.choice(possible_callees)
 
         caller.calls_made += 1
         callee.calls_received += 1
+        successful_calls += 1
 
         # Baseline
         path_base, cost_base, method_base = route_call_via_root(
@@ -655,7 +656,7 @@ def run_simulation(users, all_nodes, leaves, root, num_calls, num_moves,
         costs_optimized.append(cost_opt)
 
         call_record = {
-            'call_num': len(all_call_paths) + 1,
+            'call_num': successful_calls,
             'caller': caller.uid,
             'callee': callee.uid,
             'caller_loc': caller.current_leaf.name,
@@ -671,8 +672,13 @@ def run_simulation(users, all_nodes, leaves, root, num_calls, num_moves,
 
         saving = cost_base - cost_opt
         saving_pct = (saving / cost_base * 100) if cost_base > 0 else 0
-        log.append(f"📞 CALL #{call_record['call_num']}: {caller.uid}@{caller.current_leaf.name} → {callee.uid}@{callee.current_leaf.name}")
-        log.append(f"   Baseline: {cost_base} hops | Optimized ({method_opt}): {cost_opt} hops | Saved: {saving} ({saving_pct:.0f}%)")
+        log.append(
+            f"📞 CALL #{successful_calls}: "
+            f"{caller.uid}@{caller.current_leaf.name} → "
+            f"{callee.uid}@{callee.current_leaf.name} | "
+            f"Baseline: {cost_base} | Optimized: {cost_opt} ({method_opt}) | "
+            f"Saved: {saving} ({saving_pct:.0f}%)"
+        )
 
         if replication_enabled:
             update_replication(caller, all_nodes, cmr_threshold, replication_level)
@@ -684,7 +690,7 @@ def run_simulation(users, all_nodes, leaves, root, num_calls, num_moves,
         'costs_optimized': costs_optimized,
         'update_costs': update_costs,
         'all_call_paths': all_call_paths,
-        'move_count': len(move_events)
+        'move_count': actual_moves
     }
 
 
@@ -697,14 +703,14 @@ def main():
     st.title("📡 Hierarchical Location Scheme Simulator")
     st.markdown("""
     Simulates call routing, **forwarding pointers**, and **replication** in a hierarchical
-    mobile location management scheme. The tree represents the hierarchy of location databases
+    mobile location management scheme. The tree = hierarchy of location databases
     (HLR → Region → State → City/VLR).
     """)
 
     # ── Sidebar ──
     st.sidebar.header("🌲 Tree Configuration")
     tree_depth = st.sidebar.slider("Tree Depth", 1, 3, 3,
-                                    help="1=Regions only, 2=+States, 3=+Cities")
+                                    help="1=Regions, 2=+States, 3=+Cities")
     max_branch = st.sidebar.slider("Max children per node", 2, 6, 4)
 
     st.sidebar.header("👤 Users")
@@ -769,43 +775,81 @@ def main():
     costs_o = results['costs_optimized']
     update_costs = results['update_costs']
 
-    # ── Call Viewer Controls ──
+    # ─────────────────────────────────────────────────────────
+    # CALL VIEWER with working Previous / Next
+    # ─────────────────────────────────────────────────────────
+
     st.subheader("🎛️ Call Viewer")
 
     if not all_call_paths:
-        st.warning("No calls were made (callers may have called themselves). Increase users or calls.")
-        view_mode = "none"
+        st.warning("No calls completed. Try increasing users or calls.")
+        calls_to_show = []
     else:
+        # Clamp stored index to valid range
+        max_idx = len(all_call_paths) - 1
+        if 'selected_call_idx' not in st.session_state:
+            st.session_state.selected_call_idx = 0
+        if st.session_state.selected_call_idx > max_idx:
+            st.session_state.selected_call_idx = max_idx
+        if st.session_state.selected_call_idx < 0:
+            st.session_state.selected_call_idx = 0
+
         viewer_col1, viewer_col2 = st.columns([1, 3])
 
         with viewer_col1:
             view_mode = st.radio(
                 "View mode",
                 ["Single call", "All calls", "Range of calls"],
-                index=0,
-                help="Choose how many call paths to display on the map and tree"
+                index=0
             )
 
         with viewer_col2:
             if view_mode == "Single call":
+                # Build labels
                 call_options = [
-                    f"Call #{c['call_num']}: {c['caller']}@{c['caller_loc']} → {c['callee']}@{c['callee_loc']} "
-                    f"(cost {c['cost']}, {c['method']})"
+                    f"Call #{c['call_num']}: {c['caller']}@{c['caller_loc']} → "
+                    f"{c['callee']}@{c['callee_loc']} (cost={c['cost']}, {c['method']})"
                     for c in all_call_paths
                 ]
-                selected_idx = st.selectbox("Select call to view", range(len(call_options)),
-                                             format_func=lambda i: call_options[i])
 
-                # Prev / Next buttons
-                nav_col1, nav_col2, nav_col3 = st.columns([1, 1, 4])
-                with nav_col1:
-                    if st.button("⬅️ Previous") and selected_idx > 0:
-                        selected_idx -= 1
-                with nav_col2:
-                    if st.button("Next ➡️") and selected_idx < len(all_call_paths) - 1:
-                        selected_idx += 1
+                # Previous / Next callbacks
+                def go_prev():
+                    st.session_state.selected_call_idx = max(
+                        0, st.session_state.selected_call_idx - 1
+                    )
 
-                calls_to_show = [all_call_paths[selected_idx]]
+                def go_next():
+                    st.session_state.selected_call_idx = min(
+                        len(all_call_paths) - 1,
+                        st.session_state.selected_call_idx + 1
+                    )
+
+                # Selectbox synced via session state key
+                selected_idx = st.selectbox(
+                    "Select call to view",
+                    range(len(call_options)),
+                    index=st.session_state.selected_call_idx,
+                    format_func=lambda i: call_options[i],
+                    key="call_selectbox"
+                )
+                # Sync back (user may have used the dropdown directly)
+                st.session_state.selected_call_idx = selected_idx
+
+                # Navigation buttons
+                nav1, nav2, nav3 = st.columns([1, 1, 4])
+                with nav1:
+                    st.button("⬅️ Previous", on_click=go_prev,
+                              disabled=(st.session_state.selected_call_idx == 0))
+                with nav2:
+                    st.button("Next ➡️", on_click=go_next,
+                              disabled=(st.session_state.selected_call_idx >= max_idx))
+                with nav3:
+                    st.caption(
+                        f"Viewing call {st.session_state.selected_call_idx + 1} "
+                        f"of {len(all_call_paths)}"
+                    )
+
+                calls_to_show = [all_call_paths[st.session_state.selected_call_idx]]
 
             elif view_mode == "Range of calls":
                 if len(all_call_paths) > 1:
@@ -814,23 +858,26 @@ def main():
                         1, len(all_call_paths),
                         (1, min(5, len(all_call_paths)))
                     )
-                    calls_to_show = all_call_paths[range_vals[0]-1 : range_vals[1]]
+                    calls_to_show = all_call_paths[range_vals[0] - 1: range_vals[1]]
                 else:
                     calls_to_show = all_call_paths
 
             else:  # All calls
                 calls_to_show = all_call_paths
 
-        # Show legend for currently visible calls
+        # Color legend
         if len(calls_to_show) > 1:
-            legend_text = " | ".join([
-                f"<span style='color:{CALL_COLORS[i % len(CALL_COLORS)]};font-weight:bold'>"
-                f"Call #{c['call_num']}: {c['caller']}→{c['callee']}</span>"
-                for i, c in enumerate(calls_to_show)
-            ])
-            st.markdown(f"**Visible calls:** {legend_text}", unsafe_allow_html=True)
+            legend_parts = []
+            for i, c in enumerate(calls_to_show):
+                clr = CALL_COLORS[i % len(CALL_COLORS)]
+                legend_parts.append(
+                    f"<span style='color:{clr};font-weight:bold'>"
+                    f"#{c['call_num']}: {c['caller']}→{c['callee']}</span>"
+                )
+            st.markdown("**Visible calls:** " + " | ".join(legend_parts),
+                        unsafe_allow_html=True)
 
-    # ── Gather forwarding edges ──
+    # ── Forwarding edges ──
     fwd_edges = []
     for name, node in all_nodes.items():
         for uid, target_name in node.forwarding_pointers.items():
@@ -838,21 +885,22 @@ def main():
                 fwd_edges.append((node, all_nodes[target_name]))
 
     # ── Map ──
-    if all_call_paths:
-        fig_map = draw_us_map_tree(root, all_nodes, users, calls_to_show, fwd_edges)
-    else:
-        fig_map = draw_us_map_tree(root, all_nodes, users, None, fwd_edges)
+    fig_map = draw_us_map_tree(
+        root, all_nodes, users,
+        calls_to_show if calls_to_show else None,
+        fwd_edges
+    )
     st.plotly_chart(fig_map, use_container_width=True)
 
-    # ── Tree (below map) ──
-    if all_call_paths:
-        fig_tree = draw_logical_tree(root, all_nodes, users, calls_to_show)
-    else:
-        fig_tree = draw_logical_tree(root, all_nodes, users, None)
+    # ── Tree below map ──
+    fig_tree = draw_logical_tree(
+        root, all_nodes, users,
+        calls_to_show if calls_to_show else None
+    )
     st.plotly_chart(fig_tree, use_container_width=True)
 
-    # ── Call detail card ──
-    if all_call_paths and view_mode == "Single call":
+    # ── Call detail card (single mode) ──
+    if calls_to_show and view_mode == "Single call":
         c = calls_to_show[0]
         st.markdown("---")
         dc1, dc2, dc3, dc4, dc5 = st.columns(5)
@@ -862,10 +910,12 @@ def main():
         dc4.metric("Optimized Cost", f"{c['cost']} hops")
         dc5.metric("Saving", f"{c['saving']} hops",
                     delta=f"-{c['saving']}" if c['saving'] > 0 else "0")
-        st.caption(f"**Routing method:** {c['method']} | "
-                   f"**Path:** {' → '.join(n.name for n in c['path'])}")
+        st.caption(
+            f"**Method:** {c['method']}  \n"
+            f"**Path:** {' → '.join(n.name for n in c['path'])}"
+        )
 
-    # ── Metrics ──
+    # ── Aggregate Metrics ──
     st.subheader("📊 Aggregate Performance Metrics")
 
     avg_baseline = sum(costs_b) / len(costs_b) if costs_b else 0
@@ -878,46 +928,57 @@ def main():
     mc1, mc2, mc3, mc4, mc5, mc6 = st.columns(6)
     mc1.metric("Avg Baseline", f"{avg_baseline:.2f}")
     mc2.metric("Avg Optimized", f"{avg_opt:.2f}")
-    mc3.metric("Saving %", f"{saving_pct:.1f}%")
+    mc3.metric("Saving %", f"{saving_pct:.1f}%",
+               delta=f"-{avg_baseline - avg_opt:.1f} hops" if avg_baseline > avg_opt else None)
     mc4.metric("Total Search", f"{total_search}")
     mc5.metric("Total Update", f"{total_update}")
     mc6.metric("Tree Nodes", len(all_nodes))
 
-    strategy = "No Optimization"
+    strategy = "No Optimization (LCA only)"
     if forwarding_enabled:
         strategy = f"Forwarding Pointers (level ≥ {forwarding_level})"
     elif replication_enabled:
         strategy = f"Replication (CMR ≥ {cmr_threshold})"
-    st.info(f"**Active Strategy:** {strategy}")
+    st.info(f"**Active Strategy:** {strategy} | "
+            f"**Calls:** {len(all_call_paths)} | "
+            f"**Moves:** {results['move_count']} | "
+            f"**Seed:** {st.session_state.sim_seed}")
 
-    # ── Bar chart ──
+    # ── Per-call bar chart ──
     st.subheader("📈 Per-Call Cost: Baseline vs Optimized")
     if costs_b:
         fig_cost = go.Figure()
-        fig_cost.add_trace(go.Bar(x=list(range(1, len(costs_b)+1)), y=costs_b,
-                                   name='Baseline (via Root)', marker_color='lightcoral'))
-        fig_cost.add_trace(go.Bar(x=list(range(1, len(costs_o)+1)), y=costs_o,
-                                   name='Optimized', marker_color='lightgreen'))
-        fig_cost.update_layout(barmode='group', xaxis_title='Call #',
-                                yaxis_title='Cost (hops)', height=300, margin=dict(t=30))
+        fig_cost.add_trace(go.Bar(
+            x=list(range(1, len(costs_b) + 1)), y=costs_b,
+            name='Baseline (via Root)', marker_color='lightcoral'))
+        fig_cost.add_trace(go.Bar(
+            x=list(range(1, len(costs_o) + 1)), y=costs_o,
+            name='Optimized', marker_color='lightgreen'))
+        fig_cost.update_layout(
+            barmode='group', xaxis_title='Call #',
+            yaxis_title='Cost (hops)', height=300, margin=dict(t=30))
         st.plotly_chart(fig_cost, use_container_width=True)
 
     # ── Cumulative chart ──
     if len(costs_b) > 1:
         st.subheader("📉 Cumulative Cost Over Time")
-        cum_b = [sum(costs_b[:i+1]) for i in range(len(costs_b))]
-        cum_o = [sum(costs_o[:i+1]) for i in range(len(costs_o))]
+        cum_b = [sum(costs_b[:i + 1]) for i in range(len(costs_b))]
+        cum_o = [sum(costs_o[:i + 1]) for i in range(len(costs_o))]
         fig_cum = go.Figure()
-        fig_cum.add_trace(go.Scatter(x=list(range(1, len(cum_b)+1)), y=cum_b,
-                                      mode='lines+markers', name='Cumulative Baseline', line=dict(color='coral')))
-        fig_cum.add_trace(go.Scatter(x=list(range(1, len(cum_o)+1)), y=cum_o,
-                                      mode='lines+markers', name='Cumulative Optimized', line=dict(color='green')))
+        fig_cum.add_trace(go.Scatter(
+            x=list(range(1, len(cum_b) + 1)), y=cum_b,
+            mode='lines+markers', name='Cumulative Baseline', line=dict(color='coral')))
+        fig_cum.add_trace(go.Scatter(
+            x=list(range(1, len(cum_o) + 1)), y=cum_o,
+            mode='lines+markers', name='Cumulative Optimized', line=dict(color='green')))
         if update_costs:
-            cum_u = [sum(update_costs[:i+1]) for i in range(len(update_costs))]
-            fig_cum.add_trace(go.Scatter(x=list(range(1, len(cum_u)+1)), y=cum_u,
-                                          mode='lines+markers', name='Cumulative Updates', line=dict(color='orange')))
-        fig_cum.update_layout(xaxis_title='Event #', yaxis_title='Cumulative Cost',
-                               height=300, margin=dict(t=30))
+            cum_u = [sum(update_costs[:i + 1]) for i in range(len(update_costs))]
+            fig_cum.add_trace(go.Scatter(
+                x=list(range(1, len(cum_u) + 1)), y=cum_u,
+                mode='lines+markers', name='Cumulative Updates', line=dict(color='orange')))
+        fig_cum.update_layout(
+            xaxis_title='Event #', yaxis_title='Cumulative Cost',
+            height=300, margin=dict(t=30))
         st.plotly_chart(fig_cum, use_container_width=True)
 
     # ── Replication Details ──
@@ -954,8 +1015,9 @@ def main():
         fwd_table = []
         for name, node in all_nodes.items():
             for uid, target in node.forwarding_pointers.items():
-                fwd_table.append({"Node": name, "Level": node.level,
-                                   "User": uid, "Points To": target})
+                fwd_table.append({
+                    "Node": name, "Level": node.level,
+                    "User": uid, "Points To": target})
         if fwd_table:
             st.dataframe(fwd_table, use_container_width=True)
         else:
@@ -966,15 +1028,18 @@ def main():
     user_table = []
     for u in users.values():
         user_table.append({
-            "ID": u.uid, "Home": u.home_leaf.name, "Current": u.current_leaf.name,
-            "Sent": u.calls_made, "Received": u.calls_received, "Moves": u.moves,
+            "ID": u.uid, "Home": u.home_leaf.name,
+            "Current": u.current_leaf.name,
+            "Sent": u.calls_made, "Received": u.calls_received,
+            "Moves": u.moves,
             "CMR": f"{u.cmr:.2f}" if u.cmr != float('inf') else "∞"
         })
     st.dataframe(user_table, use_container_width=True)
 
     # ── Log ──
     with st.expander("📝 Event Log"):
-        st.code("\n".join(results['log']) if results['log'] else "No events.", language="text")
+        st.code("\n".join(results['log']) if results['log'] else "No events.",
+                language="text")
 
     # ── Explanation ──
     with st.expander("📖 Technical Explanation"):
@@ -990,13 +1055,17 @@ def main():
 
 ---
 
-**Baseline (Via Root):** Every call goes caller → root → callee. Cost = depth(caller) + depth(callee).
+**Baseline (Via Root):** Every call goes caller → root → callee.
+Cost = depth(caller) + depth(callee).
 
-**LCA:** Go up only to Lowest Common Ancestor. Cheaper when caller/callee are nearby.
+**LCA:** Go up only to Lowest Common Ancestor.
+Cheaper when caller & callee share a region/state.
 
-**Forwarding Pointers:** When user moves A→B, pointer at A says "go to B". Calls follow pointer early, skip root.
+**Forwarding Pointers:** When user moves A→B, pointer at A says
+"User X is now at B". Calls follow the pointer, skip the full climb.
 
-**Replication:** Copy location at multiple levels. Calls find info sooner. But moves cost more to update.
+**Replication:** Copy location at multiple tree levels.
+Calls find cached info early. But each move must update all copies.
 
 ---
 
