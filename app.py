@@ -357,7 +357,6 @@ CALL_COLORS = [
 def draw_us_map_tree(root, all_nodes, users, call_paths_to_show=None, forwarding_edges=None):
     fig = go.Figure()
 
-    # Tree edges
     edge_lats, edge_lons = [], []
     for name, node in all_nodes.items():
         if node.parent and node.lat and node.lon and node.parent.lat and node.parent.lon:
@@ -422,7 +421,7 @@ def draw_us_map_tree(root, all_nodes, users, call_paths_to_show=None, forwarding
                     mode='lines+markers',
                     line=dict(width=4, color=color),
                     marker=dict(size=10, color=color, symbol='diamond'),
-                    name=f"E{event_num} #{call_num}: {caller}→{callee} (cost={cost})",
+                    name=f"E{event_num} #{call_num}: {caller}->{callee} (cost={cost})",
                     hovertext=hover_texts,
                     hoverinfo='text'
                 ))
@@ -449,7 +448,7 @@ def draw_us_map_tree(root, all_nodes, users, call_paths_to_show=None, forwarding
     )
     fig.update_layout(
         height=520, margin=dict(l=0, r=0, t=30, b=0),
-        title="📍 Hierarchical Location Network on US Map",
+        title="Hierarchical Location Network on US Map",
         legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01, font=dict(size=10))
     )
     return fig
@@ -541,7 +540,7 @@ def draw_logical_tree(root, all_nodes, users, call_paths_to_show=None):
         height=380, margin=dict(l=10, r=10, t=40, b=10),
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, autorange='reversed'),
-        title="🌲 Logical Tree Structure (Hierarchical Database)"
+        title="Logical Tree Structure (Hierarchical Database)"
     )
     return fig
 
@@ -573,7 +572,7 @@ def run_simulation(users, all_nodes, leaves, root, num_calls, num_moves,
     costs_optimized = []
     update_costs = []
     all_call_paths = []
-    all_events = []  # unified timeline of moves and calls
+    all_events = []
     user_list = list(users.values())
 
     # Reset
@@ -585,14 +584,11 @@ def run_simulation(users, all_nodes, leaves, root, num_calls, num_moves,
         node.forwarding_pointers = {}
         node.replicated_locations = {}
 
-    # ── Build interleaved event schedule ──
-    # Distribute moves evenly among calls
-    # e.g. 12 calls + 4 moves = 16 events, moves at positions [3, 7, 11, 15]
+    # Build interleaved event schedule
     total_events = num_calls + num_moves
     events = []
 
     if total_events > 0:
-        # Place moves evenly
         move_positions = set()
         if num_moves > 0:
             spacing = total_events / num_moves
@@ -610,7 +606,7 @@ def run_simulation(users, all_nodes, leaves, root, num_calls, num_moves,
             else:
                 events.append('call')
 
-    # ── Execute events in order ──
+    # Execute events
     call_count = 0
     move_count = 0
     event_num = 0
@@ -623,7 +619,6 @@ def run_simulation(users, all_nodes, leaves, root, num_calls, num_moves,
             old_leaf = u.current_leaf
             new_leaf = rng.choice(leaves)
 
-            # Ensure actual movement
             attempts = 0
             while new_leaf.name == old_leaf.name and attempts < 10:
                 new_leaf = rng.choice(leaves)
@@ -634,11 +629,9 @@ def run_simulation(users, all_nodes, leaves, root, num_calls, num_moves,
             u.moves += 1
             move_count += 1
 
-            # Set forwarding pointers BEFORE moving
             if forwarding_enabled:
                 set_forwarding_pointers(u, old_leaf, new_leaf, forwarding_level)
 
-            # Unregister / register
             if u.uid in old_leaf.registered_users:
                 old_leaf.registered_users = [x for x in old_leaf.registered_users if x != u.uid]
             new_leaf.registered_users.append(u.uid)
@@ -660,10 +653,10 @@ def run_simulation(users, all_nodes, leaves, root, num_calls, num_moves,
             }
             all_events.append(move_record)
 
+            uc_str = f" (update cost: {uc})" if replication_enabled else ""
             log.append(
-                f"📱 Event {event_num} | MOVE #{move_count}: {u.uid} "
-                f"{old_leaf.name} → {new_leaf.name}"
-                f"{f' (update cost: {uc})' if replication_enabled else ''}"
+                f"Event {event_num} | MOVE #{move_count}: {u.uid} "
+                f"{old_leaf.name} -> {new_leaf.name}{uc_str}"
             )
 
         elif event_type == 'call':
@@ -677,12 +670,10 @@ def run_simulation(users, all_nodes, leaves, root, num_calls, num_moves,
             callee.calls_received += 1
             call_count += 1
 
-            # Baseline (via root)
             path_base, cost_base, method_base = route_call_via_root(
                 caller.current_leaf, callee.current_leaf, root, all_nodes)
             costs_baseline.append(cost_base)
 
-            # Optimized
             if forwarding_enabled:
                 path_opt, cost_opt, method_opt = route_call_with_forwarding(
                     caller.current_leaf, callee.current_leaf, all_nodes,
@@ -718,18 +709,25 @@ def run_simulation(users, all_nodes, leaves, root, num_calls, num_moves,
             all_events.append({
                 'event_num': event_num,
                 'type': 'call',
-                **call_record
+                'call_num': call_count,
+                'caller': caller.uid,
+                'callee': callee.uid,
+                'caller_loc': caller.current_leaf.name,
+                'callee_loc': callee.current_leaf.name,
+                'cost': cost_opt,
+                'cost_baseline': cost_base,
+                'method': method_opt,
+                'saving': saving
             })
 
             log.append(
-                f"📞 Event {event_num} | CALL #{call_count}: "
-                f"{caller.uid}@{caller.current_leaf.name} → "
+                f"Event {event_num} | CALL #{call_count}: "
+                f"{caller.uid}@{caller.current_leaf.name} -> "
                 f"{callee.uid}@{callee.current_leaf.name} | "
                 f"Baseline: {cost_base} | Optimized: {cost_opt} ({method_opt}) | "
                 f"Saved: {saving} ({saving_pct:.0f}%)"
             )
 
-            # Update replication after call
             if replication_enabled:
                 update_replication(caller, all_nodes, cmr_threshold, replication_level)
                 update_replication(callee, all_nodes, cmr_threshold, replication_level)
@@ -752,46 +750,46 @@ def run_simulation(users, all_nodes, leaves, root, num_calls, num_moves,
 
 def main():
     st.set_page_config(page_title="Hierarchical Location Scheme", layout="wide")
-    st.title("📡 Hierarchical Location Scheme Simulator")
-    st.markdown("""
-    Simulates **interleaved** user movements and call routing in a hierarchical
-    mobile location management scheme with **forwarding pointers** and **replication**.
-    """)
+    st.title("Hierarchical Location Scheme Simulator")
+    st.markdown(
+        "Simulates **interleaved** user movements and call routing in a hierarchical "
+        "mobile location management scheme with **forwarding pointers** and **replication**."
+    )
 
     # ── Sidebar ──
-    st.sidebar.header("🌲 Tree Configuration")
+    st.sidebar.header("Tree Configuration")
     tree_depth = st.sidebar.slider("Tree Depth", 1, 3, 3,
                                     help="1=Regions, 2=+States, 3=+Cities")
     max_branch = st.sidebar.slider("Max children per node", 2, 6, 4)
 
-    st.sidebar.header("👤 Users")
+    st.sidebar.header("Users")
     num_users = st.sidebar.slider("Number of Users", 2, 20, 6)
 
-    st.sidebar.header("📞 Simulation")
+    st.sidebar.header("Simulation")
     num_calls = st.sidebar.slider("Number of Calls", 1, 50, 12)
     num_moves = st.sidebar.slider("Number of User Moves", 0, 30, 4)
 
-    st.sidebar.header("🎲 Randomness")
+    st.sidebar.header("Randomness")
     if 'sim_seed' not in st.session_state:
         st.session_state.sim_seed = 42
     sim_seed = st.sidebar.number_input("Seed", min_value=1, max_value=9999,
                                         value=st.session_state.sim_seed)
     st.session_state.sim_seed = sim_seed
-    if st.sidebar.button("🔄 Randomize Seed"):
+    if st.sidebar.button("Randomize Seed"):
         st.session_state.sim_seed = random.randint(1, 9999)
         st.rerun()
 
-    st.sidebar.header("➡️ Forwarding Pointers")
+    st.sidebar.header("Forwarding Pointers")
     forwarding_enabled = st.sidebar.checkbox("Enable Forwarding Pointers", value=True)
     forwarding_level = st.sidebar.slider(
         "Forwarding Level", 0, tree_depth, 1,
         help="0=Root (broadest). Pointers set at this level and below.",
         disabled=not forwarding_enabled)
 
-    st.sidebar.header("📋 Replication")
+    st.sidebar.header("Replication")
     replication_enabled = st.sidebar.checkbox("Enable Replication", value=False)
     if replication_enabled and forwarding_enabled:
-        st.sidebar.warning("⚠️ Forwarding disabled to isolate replication effect")
+        st.sidebar.warning("Forwarding disabled to isolate replication effect")
         forwarding_enabled = False
     cmr_threshold = st.sidebar.slider("CMR Threshold", 0.5, 10.0, 1.0, 0.5,
                                        disabled=not replication_enabled)
@@ -811,7 +809,7 @@ def main():
         home.registered_users.append(uid)
         users[uid] = u
 
-    # ── Run Simulation ──
+    # ── Run ──
     results = run_simulation(
         users, all_nodes, leaves, root,
         num_calls=num_calls, num_moves=num_moves,
@@ -828,29 +826,33 @@ def main():
     update_costs = results['update_costs']
 
     # ── Event Timeline ──
-    st.subheader("⏱️ Event Timeline (Interleaved Moves & Calls)")
+    st.subheader("Event Timeline (Interleaved Moves and Calls)")
 
     if all_events:
         timeline_parts = []
         for ev in all_events:
             if ev['type'] == 'move':
                 timeline_parts.append(
-                    f"<span style='background:#ffe0b2;padding:2px 6px;border-radius:4px;margin:1px;display:inline-block;'>"
-                    f"E{ev['event_num']} 📱 {ev['user']} moves {ev['from']}→{ev['to']}</span>"
+                    "<span style='background:#ffe0b2;padding:2px 6px;"
+                    "border-radius:4px;margin:1px;display:inline-block;'>"
+                    "E" + str(ev['event_num']) + " MOVE " + ev['user'] +
+                    " " + ev['from'] + "->" + ev['to'] + "</span>"
                 )
             else:
                 timeline_parts.append(
-                    f"<span style='background:#c8e6c9;padding:2px 6px;border-radius:4px;margin:1px;display:inline-block;'>"
-                    f"E{ev['event_num']} 📞 #{ev['call_num']} {ev['caller']}→{ev['callee']} "
-                    f"(cost {ev['cost']})</span>"
+                    "<span style='background:#c8e6c9;padding:2px 6px;"
+                    "border-radius:4px;margin:1px;display:inline-block;'>"
+                    "E" + str(ev['event_num']) + " CALL #" + str(ev['call_num']) +
+                    " " + ev['caller'] + "->" + ev['callee'] +
+                    " (cost " + str(ev['cost']) + ")</span>"
                 )
         st.markdown(" ".join(timeline_parts), unsafe_allow_html=True)
-        st.caption("🟧 = User Move | 🟩 = Call | Events are interleaved: users move BETWEEN calls")
+        st.caption("Orange = User Move | Green = Call | Events are interleaved: users move BETWEEN calls")
     else:
         st.info("No events generated")
 
     # ── Call Viewer ──
-    st.subheader("🎛️ Call Viewer")
+    st.subheader("Call Viewer")
 
     calls_to_show = []
     view_mode = "none"
@@ -877,13 +879,16 @@ def main():
 
         with viewer_col2:
             if view_mode == "Single call":
-                call_options = [
-                    f"Call #{c['call_num']} (Event {c['event_num']}): "
-                    f"{c['caller']}@{c['caller_loc']} → "
-                    f"{c['callee']}@{c['callee_loc']} "
-                    f"(cost={c['cost']}, {c['method']})"
-                    for c in all_call_paths
-                ]
+                call_options = []
+                for c in all_call_paths:
+                    label = (
+                        "Call #" + str(c['call_num']) +
+                        " (Event " + str(c['event_num']) + "): " +
+                        c['caller'] + "@" + c['caller_loc'] + " -> " +
+                        c['callee'] + "@" + c['callee_loc'] +
+                        " (cost=" + str(c['cost']) + ", " + c['method'] + ")"
+                    )
+                    call_options.append(label)
 
                 def go_prev():
                     st.session_state.selected_call_idx = max(
@@ -905,15 +910,15 @@ def main():
 
                 nav1, nav2, nav3 = st.columns([1, 1, 4])
                 with nav1:
-                    st.button("⬅️ Previous", on_click=go_prev,
+                    st.button("Previous", on_click=go_prev,
                               disabled=(st.session_state.selected_call_idx == 0))
                 with nav2:
-                    st.button("Next ➡️", on_click=go_next,
+                    st.button("Next", on_click=go_next,
                               disabled=(st.session_state.selected_call_idx >= max_idx))
                 with nav3:
                     st.caption(
-                        f"Viewing call {st.session_state.selected_call_idx + 1} "
-                        f"of {len(all_call_paths)}"
+                        "Viewing call " + str(st.session_state.selected_call_idx + 1) +
+                        " of " + str(len(all_call_paths))
                     )
 
                 calls_to_show = [all_call_paths[st.session_state.selected_call_idx]]
@@ -937,8 +942,9 @@ def main():
             for i, c in enumerate(calls_to_show):
                 clr = CALL_COLORS[i % len(CALL_COLORS)]
                 legend_parts.append(
-                    f"<span style='color:{clr};font-weight:bold'>"
-                    f"#{c['call_num']}: {c['caller']}→{c['callee']}</span>"
+                    "<span style='color:" + clr + ";font-weight:bold'>"
+                    "#" + str(c['call_num']) + ": " +
+                    c['caller'] + "->" + c['callee'] + "</span>"
                 )
             st.markdown("**Visible calls:** " + " | ".join(legend_parts),
                         unsafe_allow_html=True)
@@ -970,19 +976,21 @@ def main():
         c = calls_to_show[0]
         st.markdown("---")
         dc1, dc2, dc3, dc4, dc5 = st.columns(5)
-        dc1.metric("Caller", f"{c['caller']} @ {c['caller_loc']}")
-        dc2.metric("Callee", f"{c['callee']} @ {c['callee_loc']}")
-        dc3.metric("Baseline Cost", f"{c['cost_baseline']} hops")
-        dc4.metric("Optimized Cost", f"{c['cost']} hops")
-        dc5.metric("Saving", f"{c['saving']} hops",
-                    delta=f"-{c['saving']}" if c['saving'] > 0 else "0")
+        dc1.metric("Caller", c['caller'] + " @ " + c['caller_loc'])
+        dc2.metric("Callee", c['callee'] + " @ " + c['callee_loc'])
+        dc3.metric("Baseline Cost", str(c['cost_baseline']) + " hops")
+        dc4.metric("Optimized Cost", str(c['cost']) + " hops")
+        saving_delta = "-" + str(c['saving']) if c['saving'] > 0 else "0"
+        dc5.metric("Saving", str(c['saving']) + " hops", delta=saving_delta)
+        path_str = " -> ".join(n.name for n in c['path'])
         st.caption(
-            f"**Event #{c['event_num']}** | **Method:** {c['method']}  \n"
-            f"**Path:** {' → '.join(n.name for n in c['path'])}"
+            "**Event #" + str(c['event_num']) + "** | "
+            "**Method:** " + c['method'] + "  \n"
+            "**Path:** " + path_str
         )
 
     # ── Aggregate Metrics ──
-    st.subheader("📊 Aggregate Performance Metrics")
+    st.subheader("Aggregate Performance Metrics")
 
     avg_baseline = sum(costs_b) / len(costs_b) if costs_b else 0
     avg_opt = sum(costs_o) / len(costs_o) if costs_o else 0
@@ -994,30 +1002,31 @@ def main():
     mc1, mc2, mc3, mc4, mc5, mc6 = st.columns(6)
     mc1.metric("Avg Baseline", f"{avg_baseline:.2f}")
     mc2.metric("Avg Optimized", f"{avg_opt:.2f}")
+    hop_diff = avg_baseline - avg_opt
     mc3.metric("Saving %", f"{saving_pct:.1f}%",
-               delta=f"-{avg_baseline - avg_opt:.1f} hops" if avg_baseline > avg_opt else None)
-    mc4.metric("Total Search", f"{total_search}")
-    mc5.metric("Total Update", f"{total_update}")
-    mc6.metric("Tree Nodes", len(all_nodes))
+               delta=f"-{hop_diff:.1f} hops" if hop_diff > 0 else None)
+    mc4.metric("Total Search", str(total_search))
+    mc5.metric("Total Update", str(total_update))
+    mc6.metric("Tree Nodes", str(len(all_nodes)))
 
     strategy = "No Optimization (LCA only)"
     if forwarding_enabled:
-        strategy = f"Forwarding Pointers (level ≥ {forwarding_level})"
+        strategy = "Forwarding Pointers (level >= " + str(forwarding_level) + ")"
     elif replication_enabled:
-        strategy = f"Replication (CMR ≥ {cmr_threshold})"
+        strategy = "Replication (CMR >= " + str(cmr_threshold) + ")"
     st.info(
-        f"**Active Strategy:** {strategy} | "
-        f"**Calls:** {results['call_count']} | "
-        f"**Moves:** {results['move_count']} | "
-        f"**Total Events:** {len(all_events)} | "
-        f"**Seed:** {st.session_state.sim_seed}"
+        "**Active Strategy:** " + strategy + " | "
+        "**Calls:** " + str(results['call_count']) + " | "
+        "**Moves:** " + str(results['move_count']) + " | "
+        "**Total Events:** " + str(len(all_events)) + " | "
+        "**Seed:** " + str(st.session_state.sim_seed)
     )
 
     # ── Per-call bar chart ──
-    st.subheader("📈 Per-Call Cost: Baseline vs Optimized")
+    st.subheader("Per-Call Cost: Baseline vs Optimized")
     if costs_b:
         fig_cost = go.Figure()
-        call_labels = [f"#{c['call_num']}" for c in all_call_paths]
+        call_labels = ["#" + str(c['call_num']) for c in all_call_paths]
         fig_cost.add_trace(go.Bar(
             x=call_labels, y=costs_b,
             name='Baseline (via Root)', marker_color='lightcoral'))
@@ -1031,7 +1040,7 @@ def main():
 
     # ── Cumulative chart ──
     if len(costs_b) > 1:
-        st.subheader("📉 Cumulative Cost Over Time")
+        st.subheader("Cumulative Cost Over Time")
         cum_b = [sum(costs_b[:i + 1]) for i in range(len(costs_b))]
         cum_o = [sum(costs_o[:i + 1]) for i in range(len(costs_o))]
         fig_cum = go.Figure()
@@ -1051,9 +1060,9 @@ def main():
             height=300, margin=dict(t=30))
         st.plotly_chart(fig_cum, use_container_width=True)
 
-    # ── Cost variation chart (shows costs are NOT all the same) ──
+    # ── Cost distribution ──
     if costs_o and len(set(costs_o)) > 1:
-        st.subheader("🔀 Cost Variation Across Calls")
+        st.subheader("Cost Distribution Across Calls")
         unique_costs = sorted(set(costs_o))
         cost_counts = [costs_o.count(c) for c in unique_costs]
         fig_var = go.Figure()
@@ -1065,38 +1074,40 @@ def main():
             height=250, margin=dict(t=30), title="Distribution of Call Costs")
         st.plotly_chart(fig_var, use_container_width=True)
 
-    # ── Replication Details ──
+    # ── Replication ──
     if replication_enabled:
-        st.subheader("📋 Replication & CMR Analysis")
+        st.subheader("Replication and CMR Analysis")
         cr1, cr2 = st.columns(2)
         with cr1:
             cmr_data = []
             for u in users.values():
                 tc = u.calls_made + u.calls_received
                 cv = u.cmr
+                cmr_display = f"{cv:.2f}" if cv != float('inf') else "inf"
+                repl_flag = "Yes" if cv >= cmr_threshold else "No"
                 cmr_data.append({
                     "User": u.uid,
                     "Calls": tc,
                     "Moves": u.moves,
-                    "CMR": f"{cv:.2f}" if cv != float('inf') else "∞",
-                    "Replicated": "✅" if cv >= cmr_threshold else "❌",
+                    "CMR": cmr_display,
+                    "Replicated": repl_flag,
                     "Location": u.current_leaf.name
                 })
             st.dataframe(cmr_data, use_container_width=True)
         with cr2:
-            st.markdown(f"""
-            **Trade-off Analysis:**
-            - CMR Threshold: **{cmr_threshold}**
-            - Total Search Cost: **{total_search}**
-            - Total Update Cost: **{total_update}**
-            - Net System Cost: **{total_search + total_update}**
-            - High CMR → replication saves search cost
-            - Low CMR → updates dominate
-            """)
+            st.markdown(
+                "**Trade-off Analysis:**\n\n"
+                "- CMR Threshold: **" + str(cmr_threshold) + "**\n"
+                "- Total Search Cost: **" + str(total_search) + "**\n"
+                "- Total Update Cost: **" + str(total_update) + "**\n"
+                "- Net System Cost: **" + str(total_search + total_update) + "**\n"
+                "- High CMR -> replication saves search cost\n"
+                "- Low CMR -> updates dominate\n"
+            )
 
-    # ── Forwarding Details ──
+    # ── Forwarding ──
     if forwarding_enabled:
-        st.subheader("🔗 Forwarding Pointers")
+        st.subheader("Forwarding Pointers")
         fwd_table = []
         for name, node in all_nodes.items():
             for uid, target in node.forwarding_pointers.items():
@@ -1109,42 +1120,65 @@ def main():
             st.info("No forwarding pointers active")
 
     # ── User Table ──
-    st.subheader("👤 User Status")
+    st.subheader("User Status")
     user_table = []
     for u in users.values():
+        cmr_display = f"{u.cmr:.2f}" if u.cmr != float('inf') else "inf"
         user_table.append({
             "ID": u.uid, "Home": u.home_leaf.name,
             "Current": u.current_leaf.name,
             "Sent": u.calls_made, "Received": u.calls_received,
             "Moves": u.moves,
-            "CMR": f"{u.cmr:.2f}" if u.cmr != float('inf') else "∞"
+            "CMR": cmr_display
         })
     st.dataframe(user_table, use_container_width=True)
 
     # ── Log ──
-    with st.expander("📝 Full Event Log"):
-        st.code("\n".join(results['log']) if results['log'] else "No events.",
-                language="text")
+    with st.expander("Full Event Log"):
+        log_text = "\n".join(results['log']) if results['log'] else "No events."
+        st.code(log_text, language="text")
 
     # ── Explanation ──
-    with st.expander("📖 Technical Explanation"):
-        st.markdown("""
-### Hierarchical Location Scheme
+    with st.expander("Technical Explanation"):
+        explanation_text = (
+            "### Hierarchical Location Scheme\n\n"
+            "| Level | Name | Role |\n"
+            "|-------|------|------|\n"
+            "| 0 | Root (HLR) | Global database |\n"
+            "| 1 | Region | Regional server |\n"
+            "| 2 | State | Area server |\n"
+            "| 3 | City (VLR) | Where users connect |\n\n"
+            "---\n\n"
+            "### Event Interleaving\n\n"
+            "Moves and calls are **interleaved** in time. This means:\n"
+            "- A user may move between calls\n"
+            "- Forwarding pointers set during a move can help subsequent calls\n"
+            "- Costs vary as users relocate during the simulation\n\n"
+            "Example timeline:\n\n"
+            "    E1: CALL (user at city A)\n"
+            "    E2: CALL (user still at A)\n"
+            "    E3: MOVE (user moves A -> B, pointer set)\n"
+            "    E4: CALL (pointer used! lower cost)\n"
+            "    E5: MOVE (user moves B -> C, pointer updated)\n"
+            "    E6: CALL (new pointer used)\n\n"
+            "---\n\n"
+            "### Why Costs Vary\n\n"
+            "| Factor | Effect |\n"
+            "|--------|--------|\n"
+            "| Different caller-callee pairs | Different LCA depths, different costs |\n"
+            "| User moves between calls | Forwarding pointers change routing |\n"
+            "| Same region callers | LCA is lower, cheaper calls |\n"
+            "| Cross-region callers | LCA is root, expensive calls |\n\n"
+            "---\n\n"
+            "### Forwarding Pointers\n\n"
+            "When user moves A->B, pointers are set from the forwarding level down. "
+            "Lower level = broader coverage = more nodes benefit.\n\n"
+            "### Replication\n\n"
+            "Location copied at multiple tree levels when CMR >= threshold. "
+            "Search finds cached info early. Moves must update all copies.\n"
+        )
+        st.markdown(explanation_text)
 
-| Level | Name | Role |
-|-------|------|------|
-| 0 | Root (HLR) | Global database |
-| 1 | Region | Regional server |
-| 2 | State | Area server |
-| 3 | City (VLR) | Where users connect |
 
----
-
-### Event Interleaving
-
-Moves and calls are **interleaved** in time. This means:
-- A user may move between calls
-- Forwarding pointers set during a move can help subsequent calls
-- Costs vary as users relocate during the simulation
-
-Example timeline:
+if __name__ == "__main__":
+    main()
